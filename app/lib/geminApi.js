@@ -87,44 +87,54 @@ async function searchYouTubeVideos(query, maxResults = 3) {
 
 // Helper function to safely parse JSON with better error handling
 function safeJsonParse(text) {
+  if (typeof text !== 'string') {
+    throw new Error('safeJsonParse expects a string');
+  }
+
+  // 1) Try direct parse
   try {
-    // First try direct parsing
     return JSON.parse(text);
   } catch (e) {
-    // Try to extract JSON from markdown code blocks
-    const jsonMatch = text.match(/```(?:json)?\s*\n([\s\S]*?)\n```/) || text.match(/({[\s\S]*})/);
-    
-    if (jsonMatch && jsonMatch[1]) {
-      try {
-        return JSON.parse(jsonMatch[1]);
-      } catch (innerError) {
-        console.error("Error parsing extracted JSON:", innerError);
-      }
-    }
-    
-    // Try to clean the text and parse again
-    try {
-      // Replace common issues that break JSON parsing
-      const cleanedText = text
-        .replace(/[\u0000-\u001F\u007F-\u009F]/g, "") // Remove control characters
-        .replace(/\\(?!["\\/bfnrt])/g, "\\\\") // Escape backslashes
-        .replace(/(?<!\\)"/g, '\\"') // Escape unescaped quotes
-        .replace(/\n/g, "\\n") // Replace newlines
-        .replace(/\r/g, "\\r") // Replace carriage returns
-        .replace(/\t/g, "\\t"); // Replace tabs
-      
-      // Try to find the JSON object in the cleaned text
-      const jsonObjectMatch = cleanedText.match(/{[\s\S]*}/);
-      if (jsonObjectMatch) {
-        return JSON.parse(jsonObjectMatch[0]);
-      }
-    } catch (cleanError) {
-      console.error("Error parsing cleaned JSON:", cleanError);
-    }
-    
-    // If all else fails, throw the original error
-    throw new Error(`Failed to parse JSON: ${e.message}`);
+    // continue to attempts
   }
+
+  // 2) Extract JSON from triple-backtick code fences (```json ... ```)
+  try {
+    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (fenceMatch && fenceMatch[1]) {
+      const candidate = fenceMatch[1].trim();
+      try {
+        return JSON.parse(candidate);
+      } catch (e) {
+        // fallthrough to other strategies
+      }
+    }
+  } catch (_) {}
+
+  // 3) Extract first JSON object or array found in the text
+  try {
+    const objMatch = text.match(/(\{[\s\S]*\})/);
+    const arrMatch = text.match(/(\[[\s\S]*\])/);
+    const match = objMatch || arrMatch;
+    if (match && match[1]) {
+      // Remove problematic control characters except common whitespace
+      const cleaned = match[1].replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+      try {
+        return JSON.parse(cleaned);
+      } catch (e) {
+        // try a looser clean: remove backticks and trim
+        const looser = cleaned.replace(/```/g, '').trim();
+        try {
+          return JSON.parse(looser);
+        } catch (e2) {
+          // last resort below
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 4) Give up with a clear error
+  throw new Error('Failed to parse JSON from text');
 }
 
 // Function to generate a fallback course structure
@@ -208,7 +218,6 @@ export async function generateCourse(courseTitle, difficultyLevel) {
 
 export async function generateCourseContent(courseTitle, difficultyLevel) {
   try {
-    // First, generate the course structure without videos
     const prompt = `
       Create a comprehensive course outline for "${courseTitle}" at the ${difficultyLevel} level.
       
